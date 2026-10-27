@@ -18,7 +18,8 @@ def add_reading():
     data = request.get_json(force=True)
     if not data:
         return jsonify({"error": "No data received"}), 400
-    data["timestamp"] = int(time.time() * 1000)
+    if "timestamp" not in data:
+        data["timestamp"] = int(time.time() * 1000)
     records.append(data)
     if len(records) > 2000:
         records.pop(0)

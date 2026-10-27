@@ -72,7 +72,15 @@ python app.py
 ```
 *Backend runs on `http://localhost:5000`.*
 
-### 3. Launch the Web Dashboard
+### 3. (Optional) Run the ESP32 Hardware Simulator
+Test the real-time pipeline and dashboard without hardware:
+```bash
+cd backend
+python simulate_esp32.py --seed
+```
+*Simulates realistic upright, close-reading (grace period), and prolonged slouch cycles.*
+
+### 4. Launch the Web Dashboard
 ```bash
 cd frontend
 npm install
