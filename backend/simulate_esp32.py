@@ -1,11 +1,11 @@
 """
 SitSense - ESP32 Telemetry Simulator
-Simulates live data streaming from the ESP32 (MPU-6050 + HC-SR04) to the Flask backend.
-Uses standard Python library (urllib) - zero external pip dependencies!
+Multi-Sensor Intersection Logic + 20-Second Sustained Slouch Alert
 
-Usage:
-  python simulate_esp32.py          # Streams live simulated telemetry continuously
-  python simulate_esp32.py --seed   # Pre-populates 40 historical readings immediately, then streams live
+Simulates:
+  - Proximity (HC-SR04): Distance < 35cm
+  - Torso Deformation (MPU-6050): Tilt > 15° AND/OR Rotation > 12°
+  - Hysteresis: Alerts ONLY when sustained continuously for > 20 seconds!
 """
 
 import argparse
@@ -19,56 +19,56 @@ import urllib.error
 SERVER_URL = "http://localhost:5000/api/posture"
 INTERVAL_SECONDS = 1.5
 
-# Realistic ergonomic phases for desk work
+# Realistic ergonomic phases demonstrating 20s grace period and intersection
 SCENARIOS = [
     {
         "name": "Phase 1: Healthy Upright Sitting",
         "duration_cycles": 8,
-        "tilt_range": (6.0, 11.0),
+        "tilt_range": (5.0, 10.0),
         "roll_range": (-2.0, 2.0),
         "dist_range": (45.0, 52.0),
-        "force_slouch": False,
-        "description": "User is sitting straight. Chest is ~48cm from monitor, spinal tilt is minimal."
+        "simulate_slouch": False,
+        "description": "User is sitting straight. Chest is ~48cm, upright alignment."
     },
     {
-        "name": "Phase 2: Leaning in for Close Reading (Grace Period)",
-        "duration_cycles": 2,
+        "name": "Phase 2: Brief Close Reading (< 20s Grace Period)",
+        "duration_cycles": 5, # 5 * 1.5s = 7.5s (< 20s)
         "tilt_range": (18.0, 22.0),
-        "roll_range": (-3.0, 3.0),
-        "dist_range": (28.0, 32.0),
-        "force_slouch": False,
-        "description": "User leans forward to inspect small text. Within 3s grace window -> no alarm."
+        "roll_range": (13.0, 16.0),
+        "dist_range": (26.0, 31.0),
+        "simulate_slouch": True,
+        "description": "User leans forward to inspect a document for ~7.5 seconds. Handled by grace period -> NO ALARM."
     },
     {
-        "name": "Phase 3: Prolonged Slouching & Hunching",
-        "duration_cycles": 10,
-        "tilt_range": (26.0, 36.0),
-        "roll_range": (6.0, 14.0),
-        "dist_range": (18.0, 25.0),
-        "force_slouch": True,
-        "description": "User fatigued, slumping forward. Sustained >3s -> Buzzer sounds & alert triggered!"
-    },
-    {
-        "name": "Phase 4: Posture Correction",
-        "duration_cycles": 8,
-        "tilt_range": (5.0, 9.0),
+        "name": "Phase 3: Resumed Upright Posture",
+        "duration_cycles": 6,
+        "tilt_range": (6.0, 9.0),
         "roll_range": (-1.0, 2.0),
         "dist_range": (46.0, 50.0),
-        "force_slouch": False,
-        "description": "User responds to buzzer, rolls shoulders back and resumes ergonomic posture."
+        "simulate_slouch": False,
+        "description": "User sat back upright. Grace period timer was safely reset."
+    },
+    {
+        "name": "Phase 4: Prolonged Multi-Sensor Slouch (> 20s Threshold)",
+        "duration_cycles": 16, # 16 * 1.5s = 24 seconds (> 20s)
+        "tilt_range": (26.0, 34.0),
+        "roll_range": (14.0, 19.0),
+        "dist_range": (18.0, 24.0),
+        "simulate_slouch": True,
+        "description": "User hunches and twists towards the screen for > 20 seconds -> BUZZER BEEPS!"
+    },
+    {
+        "name": "Phase 5: Posture Correction After Alarm",
+        "duration_cycles": 8,
+        "tilt_range": (5.0, 8.0),
+        "roll_range": (0.0, 2.0),
+        "dist_range": (47.0, 51.0),
+        "simulate_slouch": False,
+        "description": "User responds to reminder tone, rolls shoulders back to upright posture."
     }
 ]
 
-def send_telemetry(tilt: float, roll: float, distance: float, slouching: bool, custom_ts=None):
-    payload = {
-        "tilt": round(tilt, 1),
-        "roll": round(roll, 1),
-        "distance": round(distance, 1),
-        "slouching": slouching
-    }
-    if custom_ts:
-        payload["timestamp"] = custom_ts
-    
+def send_telemetry(payload):
     data_bytes = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         SERVER_URL,
@@ -83,59 +83,107 @@ def send_telemetry(tilt: float, roll: float, distance: float, slouching: bool, c
         return False, str(e)
 
 def seed_history(count=40):
-    print(f"\n[+] Seeding {count} historical posture records into backend...")
+    print(f"\n[+] Pre-populating {count} historical records...")
     now_ms = int(time.time() * 1000)
     for i in range(count):
         offset_ms = now_ms - ((count - i) * 2000)
-        # Alternate between good posture and occasional slouch
-        is_slouch = (i % 12 >= 8)
-        tilt = random.uniform(25.0, 32.0) if is_slouch else random.uniform(6.0, 12.0)
-        dist = random.uniform(20.0, 26.0) if is_slouch else random.uniform(44.0, 50.0)
-        roll = random.uniform(4.0, 10.0) if is_slouch else random.uniform(-2.0, 2.0)
-        send_telemetry(tilt, roll, dist, is_slouch, custom_ts=offset_ms)
-    print(f"[✓] Seeding complete! Dashboard will now show a full history timeline.\n")
+        is_slouch = (i % 14 >= 9)
+        tilt = random.uniform(25.0, 32.0) if is_slouch else random.uniform(6.0, 11.0)
+        dist = random.uniform(20.0, 25.0) if is_slouch else random.uniform(45.0, 50.0)
+        roll = random.uniform(13.0, 18.0) if is_slouch else random.uniform(-2.0, 2.0)
+        payload = {
+            "tilt": round(tilt, 1),
+            "roll": round(roll, 1),
+            "distance": round(dist, 1),
+            "is_close": dist < 35.0,
+            "is_tilted": tilt > 15.0,
+            "is_rotated": abs(roll) > 12.0,
+            "slouching": is_slouch,
+            "duration_sec": 22.0 if is_slouch else 0.0,
+            "buzzer": is_slouch,
+            "timestamp": offset_ms
+        }
+        send_telemetry(payload)
+    print(f"[✓] Seeding complete! Dashboard timeline populated.\n")
 
 def main():
     parser = argparse.ArgumentParser(description="SitSense ESP32 Telemetry Simulator")
     parser.add_argument("--seed", action="store_true", help="Pre-populate history with 40 sample records first")
     args = parser.parse_args()
 
-    print("=" * 65)
-    print("   🧘 SitSense — ESP32 Hardware Telemetry Simulator")
+    print("=" * 70)
+    print("   🧘 SitSense — Multi-Sensor Intersection & 20s Alert Simulator")
+    print("   Intersection Condition: Distance < 35cm AND (Tilt > 15° OR Roll > 12°)")
+    print("   Alarm Condition: Must persist continuously for > 20 SECONDS")
     print(f"   Target Backend: {SERVER_URL}")
-    print("   Press Ctrl+C to stop simulation at any time.")
-    print("=" * 65)
+    print("=" * 70)
 
     if args.seed:
         seed_history(40)
 
     cycle_count = 0
+    slouch_start_time = None
+
     try:
         while True:
             for scenario in SCENARIOS:
                 print(f"\n▶ {scenario['name']}")
-                print(f"  Note: {scenario['description']}")
-                print("-" * 65)
+                print(f"  Info: {scenario['description']}")
+                print("-" * 70)
 
                 for _ in range(scenario["duration_cycles"]):
                     cycle_count += 1
-                    tilt = random.uniform(*scenario["tilt_range"])
-                    roll = random.uniform(*scenario["roll_range"])
-                    dist = random.uniform(*scenario["dist_range"])
-                    slouch = scenario["force_slouch"]
+                    tilt = round(random.uniform(*scenario["tilt_range"]), 1)
+                    roll = round(random.uniform(*scenario["roll_range"]), 1)
+                    dist = round(random.uniform(*scenario["dist_range"]), 1)
 
-                    success, result = send_telemetry(tilt, roll, dist, slouch)
+                    is_close = (dist < 35.0)
+                    is_tilted = (tilt > 15.0)
+                    is_rotated = (abs(roll) > 12.0)
+                    is_slouching = is_close and (is_tilted or is_rotated)
+
+                    duration_sec = 0.0
+                    buzzer_active = False
+
+                    if is_slouching:
+                        if slouch_start_time is None:
+                            slouch_start_time = time.time()
+                        elapsed = time.time() - slouch_start_time
+                        duration_sec = round(elapsed, 1)
+                        if elapsed >= 20.0:
+                            buzzer_active = True
+                    else:
+                        slouch_start_time = None
+
+                    payload = {
+                        "tilt": tilt,
+                        "roll": roll,
+                        "distance": dist,
+                        "is_close": is_close,
+                        "is_tilted": is_tilted,
+                        "is_rotated": is_rotated,
+                        "slouching": is_slouching,
+                        "duration_sec": duration_sec,
+                        "buzzer": buzzer_active
+                    }
+
+                    success, res = send_telemetry(payload)
 
                     if success:
-                        status_str = "⚠️ SLOUCHING" if slouch else "✅ GOOD"
-                        print(f"[{cycle_count:03d}] {status_str} | Tilt: {tilt:4.1f}° | Roll: {roll:4.1f}° | Dist: {dist:4.1f}cm -> Sent")
+                        if buzzer_active:
+                            status_tag = f"🚨 ALARM! (>20s: {duration_sec}s)"
+                        elif is_slouching:
+                            status_tag = f"⏳ Grace ({duration_sec}s / 20.0s)"
+                        else:
+                            status_tag = "✅ Upright"
+                        print(f"[{cycle_count:03d}] {status_tag:<28} | Dist: {dist:4.1f}cm | Tilt: {tilt:4.1f}° | Roll: {roll:4.1f}°")
                     else:
-                        print(f"[{cycle_count:03d}] ❌ Could not reach Flask backend ({result}). Make sure 'python app.py' is running!")
+                        print(f"[{cycle_count:03d}] ❌ Error: Flask backend offline. Run 'python app.py'")
 
                     time.sleep(INTERVAL_SECONDS)
 
     except KeyboardInterrupt:
-        print("\n\n[✓] Simulation stopped by user.")
+        print("\n[✓] Simulator stopped.")
 
 if __name__ == "__main__":
     main()

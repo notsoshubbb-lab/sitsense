@@ -25,3 +25,4 @@ This folder contains everything needed to simulate the **SitSense ESP32** hardwa
 - **Auto-Demo Mode**:
   - Type `demo` in the Wokwi Serial Monitor and press Enter.
   - The simulation will automatically run through sample scenarios (Good Posture -> Quick Close Reading -> Prolonged Slouch -> Recovery).
+

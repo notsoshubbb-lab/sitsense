@@ -8,9 +8,9 @@ CORS(app)
 records = []
 settings = {
     "tilt_threshold": 15.0,
-    "roll_threshold": 15.0,
+    "roll_threshold": 12.0,
     "distance_threshold": 35.0,
-    "grace_period_ms": 3000
+    "grace_period_ms": 20000  # 20 seconds grace period
 }
 
 @app.route("/api/posture", methods=["POST"])
@@ -34,13 +34,21 @@ def get_history():
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
     if not records:
-        return jsonify({"total_samples": 0, "slouch_percent": 0, "slouch_count": 0, "good_posture_count": 0})
+        return jsonify({
+            "total_samples": 0,
+            "slouch_percent": 0,
+            "slouch_count": 0,
+            "good_posture_count": 0,
+            "alarms_triggered": 0
+        })
     slouch_count = sum(1 for r in records if r.get("slouching"))
+    alarms_count = sum(1 for r in records if r.get("buzzer") or r.get("duration_sec", 0) >= 20.0)
     return jsonify({
         "total_samples": len(records),
         "slouch_count": slouch_count,
         "good_posture_count": len(records) - slouch_count,
-        "slouch_percent": round((slouch_count / len(records)) * 100, 1)
+        "slouch_percent": round((slouch_count / len(records)) * 100, 1),
+        "alarms_triggered": alarms_count
     })
 
 @app.route("/api/settings", methods=["GET", "POST"])
