@@ -1,20 +1,23 @@
 /*
- * SitSense - Wokwi Simulation Firmware
- * Multi-Sensor Intersection Posture Logic:
+ * SitSense - Wokwi Simulation Firmware (Zero-Library Version)
+ * Uses native ESP32 Wire.h I2C directly — NO EXTERNAL LIBRARIES NEEDED!
+ *
+ * Multi-Sensor Intersection Logic:
  *  - HC-SR04 Proximity (< 35cm)
  *  - MPU-6050 Forward Tilt (> 15°)
  *  - MPU-6050 Torso Rotation / Roll (> 12°)
- *  - Grace Period: Beeps ONLY after sustained slouching for > 20 SECONDS!
+ *  - Alarm Rule: Beeps ONLY after sustained slouching for > 20 SECONDS!
  */
 
 #include <Wire.h>
-#include <MPU6050.h>
 #include <WiFi.h>
+
+// Wokwi MPU6050 I2C Address
+const int MPU_ADDR = 0x68;
 
 const char* ssid = "Wokwi-GUEST";
 const char* password = "";
 
-MPU6050 mpu;
 const int TRIG_PIN = 4;
 const int ECHO_PIN = 5;
 const int BUZZER_PIN = 18;
@@ -33,30 +36,40 @@ const unsigned long LOG_INTERVAL = 1000;
 bool autoDemoMode = false;
 unsigned long demoTimer = 0;
 
-void setup() {
-  Serial.begin(115200);
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
-
-  Serial.println("\n=======================================================");
-  Serial.println("  🧘 SitSense — Multi-Sensor Intersection Simulator    ");
-  Serial.println("  Threshold: Distance < 35cm AND (Tilt > 15° OR Roll > 12°)");
-  Serial.println("  Alarm Condition: Sustained Slouch for > 20 SECONDS   ");
-  Serial.println("=======================================================");
-
-  WiFi.begin(ssid, password);
-
+void initMPU() {
   Wire.begin(21, 22);
-  mpu.initialize();
-  if (mpu.testConnection()) {
-    Serial.println("[✓] MPU-6050 connection successful!");
-  } else {
-    Serial.println("[!] MPU-6050 simulated.");
-  }
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B); // PWR_MGMT_1 register
+  Wire.write(0);    // Wake up MPU-6050
+  byte error = Wire.endTransmission(true);
 
-  Serial.println("\n[TIP] Type 'demo' in Serial Monitor to run 20s automated scenario.\n");
+  if (error == 0) {
+    Serial.println("[✓] MPU-6050 connected successfully on I2C (0x68)!");
+  } else {
+    Serial.println("[!] MPU-6050 not detected. Using simulated readings.");
+  }
+}
+
+void readMPU(float &tilt, float &roll) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B); // Starting at register 0x3B (ACCEL_XOUT_H)
+  byte error = Wire.endTransmission(false);
+
+  if (error == 0 && Wire.requestFrom(MPU_ADDR, 6, true) == 6) {
+    int16_t ax = (Wire.read() << 8) | Wire.read();
+    int16_t ay = (Wire.read() << 8) | Wire.read();
+    int16_t az = (Wire.read() << 8) | Wire.read();
+
+    float axg = ax / 16384.0;
+    float ayg = ay / 16384.0;
+    float azg = az / 16384.0;
+
+    tilt = atan2(sqrt(axg * axg + ayg * ayg), azg) * 180.0 / PI;
+    roll = atan2(ayg, axg) * 180.0 / PI;
+  } else {
+    tilt = 8.0;
+    roll = 1.0;
+  }
 }
 
 float readUltrasonicDistance() {
@@ -71,7 +84,27 @@ float readUltrasonicDistance() {
   return duration / 58.2;
 }
 
+void setup() {
+  Serial.begin(115200);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  Serial.println("\n=======================================================");
+  Serial.println("  🧘 SitSense — Multi-Sensor Intersection Simulator    ");
+  Serial.println("  Condition: Distance < 35cm AND (Tilt > 15° OR Roll > 12°)");
+  Serial.println("  Alarm Rule: Sustained Slouch for > 20 SECONDS        ");
+  Serial.println("=======================================================");
+
+  WiFi.begin(ssid, password);
+  initMPU();
+
+  Serial.println("\n[TIP] Type 'demo' in Serial Monitor to run 20s automated test.\n");
+}
+
 void loop() {
+  // Check if user typed 'demo' in Serial Monitor
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
@@ -87,39 +120,31 @@ void loop() {
   float distance = 0.0;
 
   if (autoDemoMode) {
-    // 35-second demo cycle to clearly demonstrate the 20s grace period and trigger
+    // 36-second demo cycle
     unsigned long phase = (millis() - demoTimer) % 36000;
     if (phase < 8000) {
       // Phase 1: Good Posture (8 seconds)
       tilt = 8.0; roll = 1.0; distance = 48.0;
     } else if (phase < 31000) {
-      // Phase 2: Sustained Slouch (23 seconds total)
-      // Seconds 8..28 (0s to 20s): Grace period, countdown displays, NO beep!
-      // Seconds 28..31 (> 20s): Buzzer ACTIVATES!
+      // Phase 2: Sustained Slouch (23 seconds)
+      // First 20s: Grace timer counts up, NO BEEP.
+      // After 20s: Buzzer activates!
       tilt = 28.0; roll = 14.0; distance = 22.0;
     } else {
       // Phase 3: Posture Correction
       tilt = 7.0; roll = 0.5; distance = 46.0;
     }
   } else {
-    int16_t ax, ay, az, gx, gy, gz;
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-
-    float axg = ax / 16384.0;
-    float ayg = ay / 16384.0;
-    float azg = az / 16384.0;
-
-    tilt = atan2(sqrt(axg * axg + ayg * ayg), azg) * 180.0 / PI;
-    roll = atan2(ayg, axg) * 180.0 / PI;
+    readMPU(tilt, roll);
     distance = readUltrasonicDistance();
   }
 
-  // Multi-Sensor Intersection
+  // Multi-Sensor Intersection Checks
   bool isClose = (distance < distanceThresholdCm);
   bool isTilted = (tilt > tiltThresholdDeg);
   bool isRotated = (abs(roll) > rollThresholdDeg);
 
-  // Intersection: Must be close to desk AND deformed (tilted or rotated)
+  // Intersection: Must be closer than 35cm AND have angular deformation (tilt / rotation)
   bool isSlouching = isClose && (isTilted || isRotated);
 
   float slouchSec = 0.0;
@@ -140,7 +165,7 @@ void loop() {
     noTone(BUZZER_PIN);
   }
 
-  // Serial Monitor Dashboard Output
+  // Serial Monitor Output
   if (millis() - lastLogTime >= LOG_INTERVAL) {
     lastLogTime = millis();
 

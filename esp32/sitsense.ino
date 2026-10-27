@@ -1,16 +1,16 @@
-// SitSense - ESP32 Firmware
-// Multi-Sensor Intersection Posture Detection (HC-SR04 Proximity + MPU6050 Tilt & Rotation)
+// SitSense - ESP32 Firmware (Direct Wire.h - Zero External Libraries Required!)
+// Multi-Sensor Intersection Posture Detection (HC-SR04 Proximity + MPU-6050 Tilt & Rotation)
 
 #include <Wire.h>
-#include <MPU6050.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+
+const int MPU_ADDR = 0x68;
 
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASS";
 const char* serverURL = "http://YOUR_LOCAL_IP:5000/api/posture";
 
-MPU6050 mpu;
 const int TRIG_PIN = 4;
 const int ECHO_PIN = 5;
 const int BUZZER_PIN = 18;
@@ -27,6 +27,52 @@ unsigned long slouchStartTime = 0;
 unsigned long lastSend = 0;
 const unsigned long SEND_INTERVAL = 1500; // Telemetry push every 1.5 seconds
 
+void initMPU() {
+  Wire.begin(21, 22);
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B); // PWR_MGMT_1 register
+  Wire.write(0);    // Wake up MPU-6050
+  byte error = Wire.endTransmission(true);
+
+  if (error == 0) {
+    Serial.println("[✓] MPU-6050 connected successfully on I2C (0x68)!");
+  } else {
+    Serial.println("[!] MPU-6050 connection error. Check SDA(21)/SCL(22) wiring.");
+  }
+}
+
+void readMPU(float &tilt, float &roll) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B); // Starting at register 0x3B (ACCEL_XOUT_H)
+  byte error = Wire.endTransmission(false);
+
+  if (error == 0 && Wire.requestFrom(MPU_ADDR, 6, true) == 6) {
+    int16_t ax = (Wire.read() << 8) | Wire.read();
+    int16_t ay = (Wire.read() << 8) | Wire.read();
+    int16_t az = (Wire.read() << 8) | Wire.read();
+
+    float axg = ax / 16384.0;
+    float ayg = ay / 16384.0;
+    float azg = az / 16384.0;
+
+    tilt = atan2(sqrt(axg * axg + ayg * ayg), azg) * 180.0 / PI;
+    roll = atan2(ayg, axg) * 180.0 / PI;
+  } else {
+    tilt = 0.0;
+    roll = 0.0;
+  }
+}
+
+float getDistanceCm() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  return duration > 0 ? (duration / 58.2) : 999.0;
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(TRIG_PIN, OUTPUT);
@@ -41,34 +87,13 @@ void setup() {
   }
   Serial.println("\nWiFi Connected to SitSense network!");
 
-  Wire.begin();
-  mpu.initialize();
-  if (!mpu.testConnection()) {
-    Serial.println("MPU6050 connection failed!");
-  }
-}
-
-float getDistanceCm() {
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
-  return duration > 0 ? (duration / 58.2) : 999.0;
+  initMPU();
 }
 
 void loop() {
-  int16_t ax, ay, az, gx, gy, gz;
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-
-  float axg = ax / 16384.0;
-  float ayg = ay / 16384.0;
-  float azg = az / 16384.0;
-
-  // Calculate forward tilt (pitch) and torso rotation (roll)
-  float tilt = atan2(sqrt(axg * axg + ayg * ayg), azg) * 180.0 / PI;
-  float roll = atan2(ayg, axg) * 180.0 / PI;
+  float tilt = 0.0;
+  float roll = 0.0;
+  readMPU(tilt, roll);
   float distance = getDistanceCm();
 
   // Multi-Sensor Intersection Conditions:
