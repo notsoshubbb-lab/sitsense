@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "author": "SitSense Team",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 30, "left": 10, "attrs": {} },
+    { "type": "wokwi-mpu6050", "id": "mpu", "top": -140, "left": -110, "attrs": {} },
+    { "type": "wokwi-hc-sr04", "id": "ultrasonic", "top": -140, "left": 130, "attrs": {} },
+    { "type": "wokwi-buzzer", "id": "bz", "top": 120, "left": 160, "attrs": { "volume": "0.2" } }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:3V3", "mpu:VCC", "red", [ "v0" ] ],
+    [ "esp:GND.1", "mpu:GND", "black", [ "v0" ] ],
+    [ "esp:21", "mpu:SDA", "green", [ "v0" ] ],
+    [ "esp:22", "mpu:SCL", "blue", [ "v0" ] ],
+    [ "esp:5V", "ultrasonic:VCC", "red", [ "v0" ] ],
+    [ "esp:GND.2", "ultrasonic:GND", "black", [ "v0" ] ],
+    [ "esp:4", "ultrasonic:TRIG", "orange", [ "v0" ] ],
+    [ "esp:5", "ultrasonic:ECHO", "yellow", [ "v0" ] ],
+    [ "esp:18", "bz:2", "purple", [ "v0" ] ],
+    [ "esp:GND.3", "bz:1", "black", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}

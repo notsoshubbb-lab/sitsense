@@ -1,0 +1,2 @@
+# Wokwi Library Dependencies
+MPU6050
