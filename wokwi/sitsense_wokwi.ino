@@ -1,18 +1,12 @@
 /*
- * SitSense - Wokwi Simulation Firmware (Zero-Library Version)
- * Uses native ESP32 Wire.h I2C directly — NO EXTERNAL LIBRARIES NEEDED!
- *
- * Multi-Sensor Intersection Logic:
- *  - HC-SR04 Proximity (< 35cm)
- *  - MPU-6050 Forward Tilt (> 15°)
- *  - MPU-6050 Torso Rotation / Roll (> 12°)
- *  - Alarm Rule: Beeps ONLY after sustained slouching for > 20 SECONDS!
+ * SitSense - Wokwi Simulation Firmware (Zero-Library & Desktop Audio Version)
+ * Hardware: ESP32 + MPU-6050 + HC-SR04 (No Physical Buzzer)
+ * Telemetry pushes alert status to the SitSense Web Dashboard Desktop Audio System!
  */
 
 #include <Wire.h>
 #include <WiFi.h>
 
-// Wokwi MPU6050 I2C Address
 const int MPU_ADDR = 0x68;
 
 const char* ssid = "Wokwi-GUEST";
@@ -20,14 +14,13 @@ const char* password = "";
 
 const int TRIG_PIN = 4;
 const int ECHO_PIN = 5;
-const int BUZZER_PIN = 18;
 
 // Thresholds for Sensor Intersection
 float distanceThresholdCm = 35.0;    // Proximity
 float tiltThresholdDeg = 15.0;       // Forward tilt
 float rollThresholdDeg = 12.0;       // Torso rotation / roll
 
-// 20-Second Grace Window: Must persist for > 20s to beep!
+// 20-Second Grace Window: Must persist for > 20s to trigger desktop sound alert!
 const unsigned long SLOUCH_GRACE_PERIOD = 20000; 
 unsigned long slouchStartTime = 0;
 unsigned long lastLogTime = 0;
@@ -39,8 +32,8 @@ unsigned long demoTimer = 0;
 void initMPU() {
   Wire.begin(21, 22);
   Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x6B); // PWR_MGMT_1 register
-  Wire.write(0);    // Wake up MPU-6050
+  Wire.write(0x6B);
+  Wire.write(0);
   byte error = Wire.endTransmission(true);
 
   if (error == 0) {
@@ -52,7 +45,7 @@ void initMPU() {
 
 void readMPU(float &tilt, float &roll) {
   Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x3B); // Starting at register 0x3B (ACCEL_XOUT_H)
+  Wire.write(0x3B);
   byte error = Wire.endTransmission(false);
 
   if (error == 0 && Wire.requestFrom(MPU_ADDR, 6, true) == 6) {
@@ -88,13 +81,11 @@ void setup() {
   Serial.begin(115200);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
 
   Serial.println("\n=======================================================");
   Serial.println("  🧘 SitSense — Multi-Sensor Intersection Simulator    ");
   Serial.println("  Condition: Distance < 35cm AND (Tilt > 15° OR Roll > 12°)");
-  Serial.println("  Alarm Rule: Sustained Slouch for > 20 SECONDS        ");
+  Serial.println("  Desktop Sound Alert: Triggered when Slouch > 20 SECONDS");
   Serial.println("=======================================================");
 
   WiFi.begin(ssid, password);
@@ -104,7 +95,6 @@ void setup() {
 }
 
 void loop() {
-  // Check if user typed 'demo' in Serial Monitor
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
@@ -120,18 +110,12 @@ void loop() {
   float distance = 0.0;
 
   if (autoDemoMode) {
-    // 36-second demo cycle
     unsigned long phase = (millis() - demoTimer) % 36000;
     if (phase < 8000) {
-      // Phase 1: Good Posture (8 seconds)
       tilt = 8.0; roll = 1.0; distance = 48.0;
     } else if (phase < 31000) {
-      // Phase 2: Sustained Slouch (23 seconds)
-      // First 20s: Grace timer counts up, NO BEEP.
-      // After 20s: Buzzer activates!
       tilt = 28.0; roll = 14.0; distance = 22.0;
     } else {
-      // Phase 3: Posture Correction
       tilt = 7.0; roll = 0.5; distance = 46.0;
     }
   } else {
@@ -144,25 +128,21 @@ void loop() {
   bool isTilted = (tilt > tiltThresholdDeg);
   bool isRotated = (abs(roll) > rollThresholdDeg);
 
-  // Intersection: Must be closer than 35cm AND have angular deformation (tilt / rotation)
   bool isSlouching = isClose && (isTilted || isRotated);
 
   float slouchSec = 0.0;
-  bool buzzerActive = false;
+  bool alertActive = false;
 
   if (isSlouching) {
     if (slouchStartTime == 0) slouchStartTime = millis();
     unsigned long elapsed = millis() - slouchStartTime;
     slouchSec = elapsed / 1000.0;
 
-    // Beep only when slouching persists for MORE THAN 20 SECONDS!
     if (elapsed > SLOUCH_GRACE_PERIOD) {
-      buzzerActive = true;
-      tone(BUZZER_PIN, 2000, 200);
+      alertActive = true;
     }
   } else {
     slouchStartTime = 0;
-    noTone(BUZZER_PIN);
   }
 
   // Serial Monitor Output
@@ -176,11 +156,11 @@ void loop() {
       roll, (isRotated ? "ROTATED" : "OK")
     );
 
-    if (buzzerActive) {
-      Serial.printf("[Status]  🚨 ALARM TRIGGERED! Slouched for %3.1fs (>20s threshold)\n", slouchSec);
-      Serial.println("[ALERT]   >>> BUZZER BEEPING! Please sit upright! <<<");
+    if (alertActive) {
+      Serial.printf("[Status]  🚨 DESKTOP ALERT SENT! Slouched for %3.1fs (>20s threshold)\n", slouchSec);
+      Serial.println("[Sound]   >>> Web Dashboard Playing Audio Beep Alert! <<<");
     } else if (isSlouching) {
-      Serial.printf("[Status]  ⏳ SLOUCH DETECTED (Intersection Met) — Timer: %3.1fs / 20.0s (Grace Period)\n", slouchSec);
+      Serial.printf("[Status]  ⏳ SLOUCH DETECTED (Grace Timer: %3.1fs / 20.0s) -> No sound yet\n", slouchSec);
     } else {
       Serial.println("[Status]  ✅ UPRIGHT POSTURE — Optimal desk ergonomics.");
     }

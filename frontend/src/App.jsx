@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import { Line } from "react-chartjs-2";
 import {
@@ -19,38 +19,120 @@ const API_BASE = "http://localhost:5000/api";
 export default function App() {
   const [history, setHistory] = useState([]);
   const [stats, setStats] = useState({ total_samples: 0, slouch_percent: 0, alarms_triggered: 0 });
+  const [settings, setSettings] = useState({
+    baseline_tilt: 8.0,
+    baseline_roll: 0.0,
+    baseline_distance: 48.0,
+    tilt_threshold: 15.0,
+    roll_threshold: 12.0,
+    distance_threshold: 35.0,
+    grace_period_ms: 20000
+  });
   const [isConnected, setIsConnected] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  const [calibrateMsg, setCalibrateMsg] = useState("");
+
+  const lastBeepTimeRef = useRef(0);
+
+  // Synthesize desktop reminder chime via Web Audio API
+  const playAlertChime = () => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+
+      // Dual-tone ergonomic notification chime
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime); // High pitch (A5)
+      osc.frequency.exponentialRampToValueAtTime(587, ctx.currentTime + 0.35); // Gentle drop to D5
+
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.35);
+    } catch (e) {
+      console.warn("Desktop audio playback waiting for user interaction...", e);
+    }
+  };
+
+  const fetchData = async () => {
+    try {
+      const [histRes, statsRes, settingsRes] = await Promise.all([
+        axios.get(`${API_BASE}/history?limit=35`),
+        axios.get(`${API_BASE}/stats`),
+        axios.get(`${API_BASE}/settings`)
+      ]);
+      setHistory(histRes.data);
+      setStats(statsRes.data);
+      setSettings(settingsRes.data);
+      setIsConnected(true);
+
+      // Check if 20-second threshold exceeded -> Trigger Desktop Audio Chime
+      const latestReading = histRes.data[histRes.data.length - 1];
+      if (latestReading && latestReading.alert_active && audioEnabled) {
+        const now = Date.now();
+        if (now - lastBeepTimeRef.current > 2500) {
+          playAlertChime();
+          lastBeepTimeRef.current = now;
+        }
+      }
+    } catch (e) {
+      setIsConnected(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [histRes, statsRes] = await Promise.all([
-          axios.get(`${API_BASE}/history`),
-          axios.get(`${API_BASE}/stats`)
-        ]);
-        setHistory(histRes.data.slice(-30));
-        setStats(statsRes.data);
-        setIsConnected(true);
-      } catch (e) {
-        setIsConnected(false);
-      }
-    };
     fetchData();
     const interval = setInterval(fetchData, 1500);
     return () => clearInterval(interval);
-  }, []);
+  }, [audioEnabled]);
+
+  // One-Click Posture Calibration
+  const handleCalibrate = async () => {
+    try {
+      const latestReading = history[history.length - 1];
+      const payload = latestReading ? {
+        tilt: latestReading.tilt,
+        roll: latestReading.roll,
+        distance: latestReading.distance
+      } : {};
+
+      const res = await axios.post(`${API_BASE}/calibrate`, payload);
+      setSettings(prev => ({
+        ...prev,
+        baseline_tilt: res.data.baseline.tilt,
+        baseline_roll: res.data.baseline.roll,
+        baseline_distance: res.data.baseline.distance
+      }));
+
+      setCalibrateMsg(`✅ Calibrated! Baseline set: Tilt ${res.data.baseline.tilt}°, Distance ${Math.round(res.data.baseline.distance)}cm`);
+      setTimeout(() => setCalibrateMsg(""), 4500);
+    } catch (e) {
+      setCalibrateMsg("❌ Failed to calibrate. Is backend running?");
+    }
+  };
 
   const latest = history[history.length - 1] || {
-    tilt: 0,
-    roll: 0,
-    distance: 0,
+    tilt: settings.baseline_tilt,
+    roll: settings.baseline_roll,
+    distance: settings.baseline_distance,
     is_close: false,
     is_tilted: false,
     is_rotated: false,
     slouching: false,
     duration_sec: 0,
-    buzzer: false
+    alert_active: false
   };
+
+  const durationSec = latest.duration_sec || 0;
+  const timerPercent = Math.min(100, Math.round((durationSec / 20.0) * 100));
 
   const chartData = {
     labels: history.map((d) => new Date(d.timestamp).toLocaleTimeString()),
@@ -70,7 +152,7 @@ export default function App() {
         yAxisID: "y1",
       },
       {
-        label: "Desk Proximity (cm)",
+        label: "Chest Distance (cm)",
         data: history.map((d) => d.distance),
         borderColor: "rgb(59, 130, 246)",
         backgroundColor: "rgba(59, 130, 246, 0.4)",
@@ -85,7 +167,7 @@ export default function App() {
       y1: {
         type: "linear",
         position: "left",
-        title: { display: true, text: "Angle (° Tilt & Roll)" },
+        title: { display: true, text: "Angle (° Tilt / Roll)" },
         min: 0,
         max: 60,
       },
@@ -100,48 +182,117 @@ export default function App() {
     }
   };
 
-  // Progress toward 20-second alarm threshold
-  const durationSec = latest.duration_sec || 0;
-  const timerPercent = Math.min(100, Math.round((durationSec / 20.0) * 100));
-
   return (
-    <div style={{ padding: "2rem", fontFamily: "Segoe UI, sans-serif", maxWidth: "980px", margin: "auto" }}>
-      {/* Header */}
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+    <div style={{ padding: "2rem", fontFamily: "Segoe UI, sans-serif", maxWidth: "1000px", margin: "auto" }}>
+      {/* Header & Controls */}
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", flexWrap: "wrap", gap: "1rem" }}>
         <div>
           <h1 style={{ margin: 0, color: "#111827" }}>SitSense 🧘‍♂️</h1>
           <p style={{ color: "#6b7280", margin: "4px 0 0 0" }}>
-            Multi-Sensor Intersection Tracking (Proximity + Tilt + Rotation)
+            Smart Multi-Sensor Posture Ergonomics (Desktop Audio & SQLite Persistence)
           </p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <span style={{
-            width: "12px",
-            height: "12px",
-            borderRadius: "50%",
-            backgroundColor: isConnected ? "#22c55e" : "#ef4444",
-            display: "inline-block"
-          }} />
-          <span style={{ fontSize: "0.875rem", color: "#4b5563" }}>
-            {isConnected ? "Device Streaming" : "Waiting for Telemetry"}
-          </span>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {/* Audio Alert Toggle */}
+          <button
+            onClick={() => {
+              setAudioEnabled(!audioEnabled);
+              if (!audioEnabled) playAlertChime();
+            }}
+            style={{
+              padding: "0.5rem 0.9rem",
+              borderRadius: "6px",
+              border: "1px solid #d1d5db",
+              background: audioEnabled ? "#ecfdf5" : "#f3f4f6",
+              color: audioEnabled ? "#065f46" : "#6b7280",
+              fontWeight: "600",
+              cursor: "pointer"
+            }}
+          >
+            {audioEnabled ? "🔊 Desktop Audio: ON" : "🔇 Sound: MUTED"}
+          </button>
+
+          {/* Test Sound Button */}
+          <button
+            onClick={playAlertChime}
+            style={{
+              padding: "0.5rem 0.75rem",
+              borderRadius: "6px",
+              border: "1px solid #d1d5db",
+              background: "#ffffff",
+              color: "#374151",
+              fontSize: "0.85rem",
+              cursor: "pointer"
+            }}
+            title="Click to test the application chime"
+          >
+            🔔 Test Chime
+          </button>
+
+          {/* Calibration Button */}
+          <button
+            onClick={handleCalibrate}
+            style={{
+              padding: "0.5rem 1rem",
+              borderRadius: "6px",
+              border: "none",
+              background: "#2563eb",
+              color: "#ffffff",
+              fontWeight: "600",
+              cursor: "pointer"
+            }}
+          >
+            🎯 Calibrate My Posture
+          </button>
+
+          {/* Status Indicator */}
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "6px" }}>
+            <span style={{
+              width: "12px",
+              height: "12px",
+              borderRadius: "50%",
+              backgroundColor: isConnected ? "#22c55e" : "#ef4444",
+              display: "inline-block"
+            }} />
+            <span style={{ fontSize: "0.85rem", color: "#4b5563" }}>
+              {isConnected ? "Live" : "Offline"}
+            </span>
+          </div>
         </div>
       </header>
 
-      {/* 20-Second Slouch Timer Alert Banner */}
+      {/* Calibration Notification Toast */}
+      {calibrateMsg && (
+        <div style={{
+          padding: "0.85rem 1.25rem",
+          marginBottom: "1.25rem",
+          borderRadius: "8px",
+          background: "#eff6ff",
+          border: "1px solid #93c5fd",
+          color: "#1e40af",
+          fontWeight: "600"
+        }}>
+          {calibrateMsg}
+        </div>
+      )}
+
+      {/* 20-Second Slouch Countdown & Sound Alert Banner */}
       {latest.slouching && (
         <div style={{
           padding: "1rem 1.25rem",
           marginBottom: "1.5rem",
           borderRadius: "8px",
-          background: latest.buzzer ? "#fef2f2" : "#fffbeb",
-          border: `1px solid ${latest.buzzer ? "#f87171" : "#fcd34d"}`
+          background: latest.alert_active ? "#fef2f2" : "#fffbeb",
+          border: `1px solid ${latest.alert_active ? "#f87171" : "#fcd34d"}`
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-            <span style={{ fontWeight: "bold", color: latest.buzzer ? "#991b1b" : "#92400e" }}>
-              {latest.buzzer ? "🚨 SUSTAINED SLOUCH ALERT (> 20 SECONDS) — BUZZER ACTIVE!" : "⏳ Slouch Intersection Met (Grace Period Running)"}
+            <span style={{ fontWeight: "bold", color: latest.alert_active ? "#991b1b" : "#92400e" }}>
+              {latest.alert_active
+                ? "🚨 SUSTAINED SLOUCH ALERT (> 20s) — DESKTOP AUDIO CHIME BEEPING!"
+                : "⏳ Multi-Sensor Slouch Detected (20s Grace Period Running)"}
             </span>
-            <span style={{ fontWeight: "600", color: latest.buzzer ? "#991b1b" : "#92400e" }}>
+            <span style={{ fontWeight: "600", color: latest.alert_active ? "#991b1b" : "#92400e" }}>
               {durationSec}s / 20.0s
             </span>
           </div>
@@ -149,15 +300,21 @@ export default function App() {
             <div style={{
               width: `${timerPercent}%`,
               height: "100%",
-              background: latest.buzzer ? "#ef4444" : "#f59e0b",
+              background: latest.alert_active ? "#ef4444" : "#f59e0b",
               transition: "width 0.3s ease"
             }} />
           </div>
         </div>
       )}
 
+      {/* Baseline Calibration Card */}
+      <div style={{ display: "flex", gap: "1rem", padding: "0.75rem 1rem", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0", marginBottom: "1.5rem", fontSize: "0.85rem", color: "#475569" }}>
+        <span><strong>Active Baseline:</strong> Tilt: {settings.baseline_tilt}° | Rotation: {settings.baseline_roll}° | Distance: {Math.round(settings.baseline_distance)}cm</span>
+        <span>•</span>
+        <span><strong>Alert Rule:</strong> Distance &lt; {settings.distance_threshold}cm AND (Tilt &gt; {settings.tilt_threshold}° OR Roll &gt; {settings.roll_threshold}°) sustained for &gt; 20s</span>
+      </div>
+
       {/* Multi-Sensor Intersection Status Cards */}
-      <h3 style={{ margin: "0 0 0.75rem 0", color: "#374151" }}>Sensor Intersection Matrix</h3>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
         {/* Proximity */}
         <div style={{
@@ -183,7 +340,7 @@ export default function App() {
           <div style={{ fontSize: "0.85rem", color: "#6b7280" }}>2. MPU-6050 Forward Tilt</div>
           <p style={{ fontSize: "1.5rem", fontWeight: "bold", margin: "0.25rem 0" }}>{Math.round(latest.tilt)}°</p>
           <span style={{ fontSize: "0.75rem", fontWeight: "600", color: latest.is_tilted ? "#dc2626" : "#16a34a" }}>
-            {latest.is_tilted ? "⚠️ Exceeds 15° Threshold" : "✅ Normal Alignment (≤ 15°)"}
+            {latest.is_tilted ? "⚠️ Exceeds 15° Pitch" : "✅ Good Spinal Alignment"}
           </span>
         </div>
 
@@ -197,23 +354,23 @@ export default function App() {
           <div style={{ fontSize: "0.85rem", color: "#6b7280" }}>3. MPU-6050 Torso Rotation</div>
           <p style={{ fontSize: "1.5rem", fontWeight: "bold", margin: "0.25rem 0" }}>{Math.round(Math.abs(latest.roll || 0))}°</p>
           <span style={{ fontSize: "0.75rem", fontWeight: "600", color: latest.is_rotated ? "#dc2626" : "#16a34a" }}>
-            {latest.is_rotated ? "⚠️ Shoulder Twist > 12°" : "✅ Square Shoulders (≤ 12°)"}
+            {latest.is_rotated ? "⚠️ Shoulder Twist > 12°" : "✅ Square Shoulder Alignment"}
           </span>
         </div>
 
         {/* Overall Status */}
         <div style={{
           padding: "1.25rem",
-          background: latest.buzzer ? "#fef2f2" : (latest.slouching ? "#fffbeb" : "#dcfce7"),
+          background: latest.alert_active ? "#fef2f2" : (latest.slouching ? "#fffbeb" : "#dcfce7"),
           borderRadius: "10px",
-          border: `1px solid ${latest.buzzer ? "#ef4444" : (latest.slouching ? "#f59e0b" : "#86efac")}`
+          border: `1px solid ${latest.alert_active ? "#ef4444" : (latest.slouching ? "#f59e0b" : "#86efac")}`
         }}>
-          <div style={{ fontSize: "0.85rem", color: "#6b7280" }}>Intersection Result</div>
-          <p style={{ fontSize: "1.25rem", fontWeight: "bold", margin: "0.4rem 0", color: latest.buzzer ? "#991b1b" : (latest.slouching ? "#b45309" : "#166534") }}>
-            {latest.buzzer ? "🚨 ALARM BEEPING" : (latest.slouching ? "⏳ Grace Counting" : "✅ Good Ergonomics")}
+          <div style={{ fontSize: "0.85rem", color: "#6b7280" }}>Desktop Audio Alert</div>
+          <p style={{ fontSize: "1.25rem", fontWeight: "bold", margin: "0.4rem 0", color: latest.alert_active ? "#991b1b" : (latest.slouching ? "#b45309" : "#166534") }}>
+            {latest.alert_active ? "🚨 SOUND BEEPING" : (latest.slouching ? "⏳ Grace Counting" : "✅ Good Posture")}
           </p>
           <span style={{ fontSize: "0.75rem", color: "#4b5563" }}>
-            Alarms Triggered: <strong>{stats.alarms_triggered || 0}</strong>
+            Database Records: <strong>{stats.total_samples || 0}</strong>
           </span>
         </div>
       </div>

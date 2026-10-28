@@ -1,5 +1,5 @@
-// SitSense - ESP32 Firmware (Direct Wire.h - Zero External Libraries Required!)
-// Multi-Sensor Intersection Posture Detection (HC-SR04 Proximity + MPU-6050 Tilt & Rotation)
+// SitSense - ESP32 Firmware (No Physical Buzzer — Telemetry Sent to Desktop Sound System)
+// Hardware: ESP32 + MPU-6050 (Torso) + HC-SR04 (Chest Distance)
 
 #include <Wire.h>
 #include <WiFi.h>
@@ -13,14 +13,13 @@ const char* serverURL = "http://YOUR_LOCAL_IP:5000/api/posture";
 
 const int TRIG_PIN = 4;
 const int ECHO_PIN = 5;
-const int BUZZER_PIN = 18;
 
-// Configurable Baseline Thresholds
+// Baseline thresholds
 float distanceThresholdCm = 35.0;    // Proximity: chest closer than 35 cm indicates leaning in
 float tiltThresholdDeg = 15.0;       // Forward tilt: pitch greater than 15 degrees
-float rollThresholdDeg = 12.0;       // Torso rotation: roll / shoulder twist greater than 12 degrees
+float rollThresholdDeg = 12.0;       // Torso rotation: shoulder twist greater than 12 degrees
 
-// 20-Second Grace Period: Only beep if bad posture persists continuously for >20 seconds
+// 20-Second Grace Period: Desktop alert triggers if sustained slouch persists >20 seconds
 const unsigned long SLOUCH_GRACE_PERIOD = 20000; 
 unsigned long slouchStartTime = 0;
 
@@ -43,7 +42,7 @@ void initMPU() {
 
 void readMPU(float &tilt, float &roll) {
   Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x3B); // Starting at register 0x3B (ACCEL_XOUT_H)
+  Wire.write(0x3B); // Register 0x3B (ACCEL_XOUT_H)
   byte error = Wire.endTransmission(false);
 
   if (error == 0 && Wire.requestFrom(MPU_ADDR, 6, true) == 6) {
@@ -77,8 +76,6 @@ void setup() {
   Serial.begin(115200);
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
@@ -97,36 +94,31 @@ void loop() {
   float distance = getDistanceCm();
 
   // Multi-Sensor Intersection Conditions:
-  // 1. Proximity: User's chest is too close to the desk / monitor
   bool isClose = (distance < distanceThresholdCm);
-
-  // 2. Torso Deformation: Forward spinal tilt OR asymmetrical rotation / shoulder twist
   bool isTilted = (tilt > tiltThresholdDeg);
   bool isRotated = (abs(roll) > rollThresholdDeg);
 
-  // True slouching requires INTERSECTION: User is close to desk AND exhibits torso deformation (tilt / rotation)
+  // True slouching requires INTERSECTION: Close to desk AND torso deformed (tilt / rotation)
   bool isSlouching = isClose && (isTilted || isRotated);
 
   float currentDurationSec = 0.0;
-  bool buzzerActive = false;
+  bool alertActive = false;
 
-  // Hysteresis alert logic with 20-second grace window
+  // Hysteresis alert logic: 20-second countdown
   if (isSlouching) {
     if (slouchStartTime == 0) slouchStartTime = millis();
     unsigned long elapsed = millis() - slouchStartTime;
     currentDurationSec = elapsed / 1000.0;
 
-    // Only beep if the slouched posture persists for MORE THAN 20 seconds!
+    // Trigger desktop alert if sustained for MORE THAN 20 seconds
     if (elapsed > SLOUCH_GRACE_PERIOD) {
-      buzzerActive = true;
-      tone(BUZZER_PIN, 2000, 200); // 2kHz alert beep
+      alertActive = true;
     }
   } else {
     slouchStartTime = 0; // Reset timer immediately once posture returns to normal
-    noTone(BUZZER_PIN);
   }
 
-  // Send comprehensive telemetry to Flask backend
+  // Push telemetry to Flask backend for desktop webapp sound alerts
   if (millis() - lastSend > SEND_INTERVAL && WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(serverURL);
@@ -141,7 +133,7 @@ void loop() {
       "\"is_rotated\":" + (isRotated ? "true" : "false") + "," +
       "\"slouching\":" + (isSlouching ? "true" : "false") + "," +
       "\"duration_sec\":" + currentDurationSec + "," +
-      "\"buzzer\":" + (buzzerActive ? "true" : "false") +
+      "\"alert_active\":" + (alertActive ? "true" : "false") +
     "}";
 
     http.POST(payload);

@@ -1,11 +1,10 @@
 """
-SitSense - ESP32 Telemetry Simulator
-Multi-Sensor Intersection Logic + 20-Second Sustained Slouch Alert
-
+SitSense - ESP32 Telemetry Simulator (Desktop Audio & SQLite Persistence)
 Simulates:
   - Proximity (HC-SR04): Distance < 35cm
   - Torso Deformation (MPU-6050): Tilt > 15° AND/OR Rotation > 12°
   - Hysteresis: Alerts ONLY when sustained continuously for > 20 seconds!
+  - Alerts are routed to the Web Dashboard Desktop Audio System (No physical buzzer)
 """
 
 import argparse
@@ -19,7 +18,6 @@ import urllib.error
 SERVER_URL = "http://localhost:5000/api/posture"
 INTERVAL_SECONDS = 1.5
 
-# Realistic ergonomic phases demonstrating 20s grace period and intersection
 SCENARIOS = [
     {
         "name": "Phase 1: Healthy Upright Sitting",
@@ -32,12 +30,12 @@ SCENARIOS = [
     },
     {
         "name": "Phase 2: Brief Close Reading (< 20s Grace Period)",
-        "duration_cycles": 5, # 5 * 1.5s = 7.5s (< 20s)
+        "duration_cycles": 5, # 7.5 seconds (< 20s)
         "tilt_range": (18.0, 22.0),
         "roll_range": (13.0, 16.0),
         "dist_range": (26.0, 31.0),
         "simulate_slouch": True,
-        "description": "User leans forward to inspect a document for ~7.5 seconds. Handled by grace period -> NO ALARM."
+        "description": "User leans forward to inspect a document for ~7.5 seconds. Grace period prevents false alarm."
     },
     {
         "name": "Phase 3: Resumed Upright Posture",
@@ -50,21 +48,21 @@ SCENARIOS = [
     },
     {
         "name": "Phase 4: Prolonged Multi-Sensor Slouch (> 20s Threshold)",
-        "duration_cycles": 16, # 16 * 1.5s = 24 seconds (> 20s)
+        "duration_cycles": 16, # 24 seconds (> 20s)
         "tilt_range": (26.0, 34.0),
         "roll_range": (14.0, 19.0),
         "dist_range": (18.0, 24.0),
         "simulate_slouch": True,
-        "description": "User hunches and twists towards the screen for > 20 seconds -> BUZZER BEEPS!"
+        "description": "User hunches and twists towards the screen for > 20 seconds -> Desktop Web Sound Beeps!"
     },
     {
-        "name": "Phase 5: Posture Correction After Alarm",
+        "name": "Phase 5: Posture Correction After Sound Alert",
         "duration_cycles": 8,
         "tilt_range": (5.0, 8.0),
         "roll_range": (0.0, 2.0),
         "dist_range": (47.0, 51.0),
         "simulate_slouch": False,
-        "description": "User responds to reminder tone, rolls shoulders back to upright posture."
+        "description": "User responds to desktop sound reminder, rolls shoulders back to upright posture."
     }
 ]
 
@@ -75,7 +73,6 @@ def send_telemetry(payload):
         data=data_bytes,
         headers={"Content-Type": "application/json"}
     )
-    
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
             return resp.status == 200, payload
@@ -83,7 +80,7 @@ def send_telemetry(payload):
         return False, str(e)
 
 def seed_history(count=40):
-    print(f"\n[+] Pre-populating {count} historical records...")
+    print(f"\n[+] Pre-populating {count} historical records in SQLite database...")
     now_ms = int(time.time() * 1000)
     for i in range(count):
         offset_ms = now_ms - ((count - i) * 2000)
@@ -100,21 +97,22 @@ def seed_history(count=40):
             "is_rotated": abs(roll) > 12.0,
             "slouching": is_slouch,
             "duration_sec": 22.0 if is_slouch else 0.0,
-            "buzzer": is_slouch,
+            "alert_active": is_slouch,
             "timestamp": offset_ms
         }
         send_telemetry(payload)
-    print(f"[✓] Seeding complete! Dashboard timeline populated.\n")
+    print(f"[✓] Seeding complete! Database populated.\n")
 
 def main():
     parser = argparse.ArgumentParser(description="SitSense ESP32 Telemetry Simulator")
-    parser.add_argument("--seed", action="store_true", help="Pre-populate history with 40 sample records first")
+    parser.add_argument("--seed", action="store_true", help="Pre-populate history with 40 records in SQLite first")
     args = parser.parse_args()
 
     print("=" * 70)
-    print("   🧘 SitSense — Multi-Sensor Intersection & 20s Alert Simulator")
+    print("   🧘 SitSense — Multi-Sensor Intersection & Desktop Audio Simulator")
     print("   Intersection Condition: Distance < 35cm AND (Tilt > 15° OR Roll > 12°)")
     print("   Alarm Condition: Must persist continuously for > 20 SECONDS")
+    print("   Alert Destination: Desktop Webapp Audio Chime (No physical buzzer)")
     print(f"   Target Backend: {SERVER_URL}")
     print("=" * 70)
 
@@ -143,7 +141,7 @@ def main():
                     is_slouching = is_close and (is_tilted or is_rotated)
 
                     duration_sec = 0.0
-                    buzzer_active = False
+                    alert_active = False
 
                     if is_slouching:
                         if slouch_start_time is None:
@@ -151,7 +149,7 @@ def main():
                         elapsed = time.time() - slouch_start_time
                         duration_sec = round(elapsed, 1)
                         if elapsed >= 20.0:
-                            buzzer_active = True
+                            alert_active = True
                     else:
                         slouch_start_time = None
 
@@ -164,14 +162,14 @@ def main():
                         "is_rotated": is_rotated,
                         "slouching": is_slouching,
                         "duration_sec": duration_sec,
-                        "buzzer": buzzer_active
+                        "alert_active": alert_active
                     }
 
                     success, res = send_telemetry(payload)
 
                     if success:
-                        if buzzer_active:
-                            status_tag = f"🚨 ALARM! (>20s: {duration_sec}s)"
+                        if alert_active:
+                            status_tag = f"🚨 DESKTOP ALERT (>20s: {duration_sec}s)"
                         elif is_slouching:
                             status_tag = f"⏳ Grace ({duration_sec}s / 20.0s)"
                         else:
